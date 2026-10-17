@@ -6,7 +6,8 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
-    downloadContentFromMessage 
+    downloadContentFromMessage,
+    Browsers
 } = require('@whiskeysockets/baileys');
 const QRCode = require('qrcode');
 const sharp = require('sharp');
@@ -14,7 +15,7 @@ const pino = require('pino');
 const fs = require('fs');
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -28,10 +29,8 @@ let isConnected = false;
 let isInitializing = false;
 
 async function startBaileys() {
-    // Jika socket sudah connect, keluar
     if (isConnected) return;
     
-    // Reset flag dan beritahu cust
     isInitializing = true;
     qrCodeData = null;
     io.emit('qr_status', { qr: null, isConnected: false, isInitializing: true });
@@ -53,7 +52,12 @@ async function startBaileys() {
             auth: state,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: ['Ubuntu', 'Chrome', '20.0.04']
+            // PERBAIKAN: Gunakan identitas browser resmi bawaan Baileys
+            browser: Browsers.ubuntu('Chrome'),
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 0,
+            keepAliveIntervalMs: 10000,
+            emitOwnEvents: true
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -85,6 +89,8 @@ async function startBaileys() {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
+                console.log(`Koneksi terputus dengan status code: ${statusCode}`);
+
                 if (statusCode === DisconnectReason.loggedOut) {
                     try {
                         fs.rmSync('auth_info', { recursive: true, force: true });
@@ -97,6 +103,7 @@ async function startBaileys() {
 
                 if (sock) {
                     sock.ev.removeAllListeners();
+                    sock.end(undefined);
                     sock = null;
                 }
 
@@ -150,7 +157,6 @@ app.get('/api/status', (req, res) => {
 app.post('/api/generate-qr', async (req, res) => {
     try {
         if (!isConnected) {
-            // Paksa reset ulang proses jika belum online
             isInitializing = false;
             startBaileys();
         }
@@ -167,8 +173,13 @@ app.post('/api/logout', async (req, res) => {
         isInitializing = false;
 
         if (sock) {
-            await sock.logout();
+            try {
+                await sock.logout();
+            } catch (e) {
+                console.error('Logout error:', e);
+            }
             sock.ev.removeAllListeners();
+            sock.end(undefined);
             sock = null;
         }
 
